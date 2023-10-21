@@ -4,5 +4,14 @@ set(CMAKE_CXX_STANDARD 20)
 
 project("hooklib_examples" LANGUAGES CXX)
 
-add_executable(foo_example "foo_example.cpp")
-target_link_libraries(foo_example PRIVATE hooklib)
+file(GLOB EXAMPLES_SOURCES "*.cpp")
+
+foreach(sourceFile IN LISTS EXAMPLES_SOURCES)
+  get_filename_component(fileName ${sourceFile} NAME_WE)
+
+  set(targetName "${fileName}_example")
+
+  add_executable(${targetName} ${sourceFile})
+  target_link_libraries(${targetName} PRIVATE hooklib)
+endforeach()
+
