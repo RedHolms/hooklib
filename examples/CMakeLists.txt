@@ -14,4 +14,3 @@ foreach(sourceFile IN LISTS EXAMPLES_SOURCES)
   add_executable(${targetName} ${sourceFile})
   target_link_libraries(${targetName} PRIVATE hooklib)
 endforeach()
-
