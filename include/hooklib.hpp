@@ -1,12 +1,14 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <stdint.h>
 
 #include <functional>
 #include <optional>
 #include <numeric>
 #include <tuple>
+#include <set>
 
 // HKLIB_ARCH
 #define HKLIB_X86 0
@@ -71,6 +73,10 @@ namespace hooklib {
       constexpr pointer& operator-=(ptrdiff_t b) noexcept {
         value -= b;
         return *this;
+      }
+
+      constexpr bool operator==(pointer const& b) const noexcept {
+        return value == b.value;
       }
 
       constexpr operator bool() const noexcept {
@@ -228,7 +234,7 @@ namespace hooklib {
       }
 
       template <typename T>
-      constexpr void read(pointer address) noexcept {
+      constexpr T read(pointer address) noexcept {
         return static_cast<T*>(address)[0];
       }
       
@@ -265,6 +271,16 @@ namespace hooklib {
         return hook->call(args...);
       }
 
+      template <typename HookT, typename RetT, typename... ArgsT>
+      inline RetT call_hook_relay(HookT* hook, ArgsT... args) {
+        auto callback = hook->get_callback();
+
+        if (callback)
+          return callback(args...);
+
+        return hook->call(args...);
+      }
+
     } // namespace relay
 
     template <typename HookT, typename FnTrT>
@@ -274,6 +290,16 @@ namespace hooklib {
     struct function_hook_relay_generator<HookT, function_traits<RetT, CallConv, ArgsT...>> {
       static RetT __cdecl relay(HookT* hook, void*, ArgsT... args) {
         return relay::function_hook_relay<HookT, RetT, ArgsT...>(hook, args...);
+      }
+    };
+
+    template <typename HookT, typename FnTrT>
+    struct call_hook_relay_generator;
+
+    template <typename HookT, typename RetT, call_conv CallConv, typename... ArgsT>
+    struct call_hook_relay_generator<HookT, function_traits<RetT, CallConv, ArgsT...>> {
+      static RetT __cdecl relay(HookT* hook, void*, ArgsT... args) {
+        return relay::call_hook_relay<HookT, RetT, ArgsT...>(hook, args...);
       }
     };
 
@@ -360,6 +386,138 @@ namespace hooklib {
         pointer m_frame = nullptr;
         pointer m_p = nullptr;
       };
+
+      template <typename FnTrT>
+      static constexpr pointer generate_relay_jumper(assembly::code_array& code, pointer hook, pointer relay_address) {
+        // push ecx to the stack as an argument
+        if (FnTrT::calling_convention == cthiscall) {
+          // sub esp, 4
+          code.write<uint8_t>(0x83);
+          code.write<uint8_t>(0xEC);
+          code.write<uint8_t>(0x04);
+
+          // mov eax, [esp + 4]
+          code.write<uint8_t>(0x8B);
+          code.write<uint8_t>(0x44);
+          code.write<uint8_t>(0x24);
+          code.write<uint8_t>(0x04);
+          
+          // mov [esp], eax
+          code.write<uint8_t>(0x89);
+          code.write<uint8_t>(0x04);
+          code.write<uint8_t>(0x24);
+
+          if (not FnTrT::return_value_fits_in_register) {
+            // mov eax, [esp + 8]
+            code.write<uint8_t>(0x8B);
+            code.write<uint8_t>(0x44);
+            code.write<uint8_t>(0x24);
+            code.write<uint8_t>(0x08);
+            
+            // mov [esp + 4], eax
+            code.write<uint8_t>(0x89);
+            code.write<uint8_t>(0x44);
+            code.write<uint8_t>(0x24);
+            code.write<uint8_t>(0x04);
+            
+            // mov [esp + 8], ecx
+            code.write<uint8_t>(0x89);
+            code.write<uint8_t>(0x4C);
+            code.write<uint8_t>(0x24);
+            code.write<uint8_t>(0x08);
+          }
+          else {
+            // mov [esp + 4], ecx
+            code.write<uint8_t>(0x89);
+            code.write<uint8_t>(0x4C);
+            code.write<uint8_t>(0x24);
+            code.write<uint8_t>(0x04);
+          }
+        }
+
+        if constexpr (not FnTrT::return_value_fits_in_register) {
+          /*
+            Now stack looks like this:
+              [esp]     = ReturnAddress (target function caller)
+              [esp + 4] = PointerToReturnStruct
+              [esp + 8] = Arguments...
+
+            But before calling relay_generator::relay we want it to look like this:
+              [esp]       = PointerToReturnStruct
+              [esp + 4]   = HookObjectPointer
+              [esp + 8]   = ReturnAdress (target function caller)
+              [esp + 12]  = Arguments...
+          */
+
+          // mov eax, [esp]
+          code.write<uint8_t>(0x8B);
+          code.write<uint8_t>(0x04);
+          code.write<uint8_t>(0x24);
+
+          // xchg [esp + 4], eax
+          code.write<uint8_t>(0x87);
+          code.write<uint8_t>(0x44);
+          code.write<uint8_t>(0x24);
+          code.write<uint8_t>(0x04);
+
+          // add esp, 4
+          code.write<uint8_t>(0x83);
+          code.write<uint8_t>(0xC4);
+          code.write<uint8_t>(0x04);
+        }
+
+        // push this
+        code.write<uint8_t>(0x68);
+        code.write<pointer>(hook);
+
+        if constexpr (not FnTrT::return_value_fits_in_register) {
+          // push eax
+          code.write<uint8_t>(0x50);
+        }
+
+        // call relay_generator::relay
+        code.op_rel_call(relay_address);
+
+        if constexpr (not FnTrT::return_value_fits_in_register) {
+          // pop eax
+          code.write<uint8_t>(0x58);
+
+          // xchg [esp + 4], eax
+          code.write<uint8_t>(0x87);
+          code.write<uint8_t>(0x44);
+          code.write<uint8_t>(0x24);
+          code.write<uint8_t>(0x04);
+          
+          // mov [esp], eax
+          code.write<uint8_t>(0x89);
+          code.write<uint8_t>(0x04);
+          code.write<uint8_t>(0x24);
+
+          // mov eax, [esp + 4]
+          code.write<uint8_t>(0x8B);
+          code.write<uint8_t>(0x44);
+          code.write<uint8_t>(0x24);
+          code.write<uint8_t>(0x04);
+        }
+        else {
+          // add esp, 4
+          code.write<uint8_t>(0x83);
+          code.write<uint8_t>(0xC4);
+          code.write<uint8_t>(0x04);
+        }
+
+        if constexpr (FnTrT::calling_convention == cstdcall && FnTrT::stack_frame_size > 0) {
+          // ret stack_frame_size
+          code.write<uint8_t>(0xC2);
+          code.write<uint16_t>(FnTrT::stack_frame_size);
+        }
+        else {
+          // ret
+          code.write<uint8_t>(0xC3);
+        }
+
+        return code.flush();
+      }
 
     }
 
@@ -452,8 +610,7 @@ namespace hooklib {
       if (not _do_hook(true))
         return false;
 
-      m_installed = true;
-      return true;
+      return m_installed = true;
     }
 
     constexpr void remove() noexcept {
@@ -492,152 +649,12 @@ namespace hooklib {
       if (m_code_generated)
         return true;
 
-      if (not _generate_relay_jump())
-        return false;
+      m_relay_jumper = impl::assembly::generate_relay_jumper<function_traits>(m_code, this, &relay_generator::relay);
 
       if (not _generate_trampoline())
         return false;
 
-      m_code_generated = true;
-      return true;
-    }
-
-    constexpr bool _generate_relay_jump() {
-      using namespace impl;
-
-      // push ecx to the stack as an argument
-      if (function_traits::calling_convention == impl::cthiscall) {
-        // sub esp, 4
-        m_code.write<uint8_t>(0x83);
-        m_code.write<uint8_t>(0xEC);
-        m_code.write<uint8_t>(0x04);
-
-        // mov eax, [esp + 4]
-        m_code.write<uint8_t>(0x8B);
-        m_code.write<uint8_t>(0x44);
-        m_code.write<uint8_t>(0x24);
-        m_code.write<uint8_t>(0x04);
-        
-        // mov [esp], eax
-        m_code.write<uint8_t>(0x89);
-        m_code.write<uint8_t>(0x04);
-        m_code.write<uint8_t>(0x24);
-
-        if (not return_value_fits_in_register) {
-          // mov eax, [esp + 8]
-          m_code.write<uint8_t>(0x8B);
-          m_code.write<uint8_t>(0x44);
-          m_code.write<uint8_t>(0x24);
-          m_code.write<uint8_t>(0x08);
-          
-          // mov [esp + 4], eax
-          m_code.write<uint8_t>(0x89);
-          m_code.write<uint8_t>(0x44);
-          m_code.write<uint8_t>(0x24);
-          m_code.write<uint8_t>(0x04);
-          
-          // mov [esp + 8], ecx
-          m_code.write<uint8_t>(0x89);
-          m_code.write<uint8_t>(0x4C);
-          m_code.write<uint8_t>(0x24);
-          m_code.write<uint8_t>(0x08);
-        }
-        else {
-          // mov [esp + 4], ecx
-          m_code.write<uint8_t>(0x89);
-          m_code.write<uint8_t>(0x4C);
-          m_code.write<uint8_t>(0x24);
-          m_code.write<uint8_t>(0x04);
-        }
-      }
-
-      if constexpr (not return_value_fits_in_register) {
-        /*
-          Now stack looks like this:
-            [esp]     = ReturnAddress (target function caller)
-            [esp + 4] = PointerToReturnStruct
-            [esp + 8] = Arguments...
-
-          But before calling relay_generator::relay we want it to look like this:
-            [esp]       = PointerToReturnStruct
-            [esp + 4]   = HookObjectPointer
-            [esp + 8]   = ReturnAdress (target function caller)
-            [esp + 12]  = Arguments...
-        */
-
-        // mov eax, [esp]
-        m_code.write<uint8_t>(0x8B);
-        m_code.write<uint8_t>(0x04);
-        m_code.write<uint8_t>(0x24);
-
-        // xchg [esp + 4], eax
-        m_code.write<uint8_t>(0x87);
-        m_code.write<uint8_t>(0x44);
-        m_code.write<uint8_t>(0x24);
-        m_code.write<uint8_t>(0x04);
-
-        // add esp, 4
-        m_code.write<uint8_t>(0x83);
-        m_code.write<uint8_t>(0xC4);
-        m_code.write<uint8_t>(0x04);
-      }
-
-      // push this
-      m_code.write<uint8_t>(0x68);
-      m_code.write<void*>(this);
-
-      if constexpr (not return_value_fits_in_register) {
-        // push eax
-        m_code.write<uint8_t>(0x50);
-      }
-
-      // relay is ALWAYS cdecl
-      pointer relay_address = &relay_generator::relay;
-
-      // call relay_generator::relay
-      m_code.op_rel_call(relay_address);
-
-      if constexpr (not return_value_fits_in_register) {
-        // pop eax
-        m_code.write<uint8_t>(0x58);
-
-        // xchg [esp + 4], eax
-        m_code.write<uint8_t>(0x87);
-        m_code.write<uint8_t>(0x44);
-        m_code.write<uint8_t>(0x24);
-        m_code.write<uint8_t>(0x04);
-        
-        // mov [esp], eax
-        m_code.write<uint8_t>(0x89);
-        m_code.write<uint8_t>(0x04);
-        m_code.write<uint8_t>(0x24);
-
-        // mov eax, [esp + 4]
-        m_code.write<uint8_t>(0x8B);
-        m_code.write<uint8_t>(0x44);
-        m_code.write<uint8_t>(0x24);
-        m_code.write<uint8_t>(0x04);
-      }
-      else {
-        // add esp, 4
-        m_code.write<uint8_t>(0x83);
-        m_code.write<uint8_t>(0xC4);
-        m_code.write<uint8_t>(0x04);
-      }
-
-      if constexpr (calling_convention == cstdcall && stack_frame_size > 0) {
-        // ret stack_frame_size
-        m_code.write<uint8_t>(0xC2);
-        m_code.write<uint16_t>(stack_frame_size);
-      }
-      else {
-        // ret
-        m_code.write<uint8_t>(0xC3);
-      }
-
-      m_relay_jumper = m_code.flush();
-
-      return true;
+      return m_code_generated = true;
     }
 
     constexpr bool _generate_trampoline() {
@@ -737,6 +754,180 @@ namespace hooklib {
     impl::pointer m_target;
     impl::pointer m_relay_jumper;
     impl::pointer m_trampoline;
+
+    callback_type m_callback;
+
+    impl::assembly::code_array m_code;
+  };
+
+  template <typename FnT>
+  class call_hook {
+  public:
+    using type = call_hook<FnT>;
+
+    using function_traits = impl::make_traits_t<FnT>;
+
+    using function_type = function_traits::function_type;
+    using function_pointer_type = function_traits::function_pointer_type;
+
+    using arguments_type = function_traits::arguments_type;
+    using return_type = function_traits::return_type;
+
+    static constexpr auto arguments_count = function_traits::arguments_count;
+    static constexpr auto stack_frame_size = function_traits::stack_frame_size;
+    static constexpr auto registers_count = function_traits::registers_count;
+    static constexpr auto calling_convention = function_traits::calling_convention;
+    
+    static constexpr bool return_value_fits_in_register = function_traits::return_value_fits_in_register;
+
+    using callback_type = impl::build_function_t<return_type, arguments_type>;
+
+    using relay_generator = impl::call_hook_relay_generator<type, function_traits>;
+
+  public:
+    constexpr call_hook() = default;
+
+    constexpr call_hook(impl::pointer target_function_address)
+      : call_hook()
+    {
+      add_target(target_function_address);
+    }
+
+    constexpr ~call_hook() {
+      remove();
+    }
+
+  public:
+    constexpr void add_target(impl::pointer call_address) noexcept {
+      using namespace impl;
+
+      if (m_installed)
+        return;
+
+      for (auto const& v : m_targets) {
+        if (call_address == v)
+          return;
+      }
+
+      // check address to point on the call instruction
+      uint8_t opcode = mem::read<uint8_t>(call_address);
+      if (opcode != 0xE8)
+        return;
+
+      pointer target_function = mem::read<pointer>(call_address + 1) + call_address + 5;
+
+      if (not m_target_function)
+        m_target_function = target_function;
+      else if (target_function != m_target_function)
+        return;
+
+      m_targets.emplace_back(call_address);
+    }
+
+    constexpr void remove_target(impl::pointer call_address) noexcept {
+      for (auto it = m_targets.begin(); it != m_targets.end(); ++it) {
+        if (*it == call_address) {
+          m_targets.erase(it);
+          break;
+        }
+      }
+    }
+
+    constexpr void set_callback(callback_type const& callback) noexcept {
+      m_callback = callback;
+    }
+
+    constexpr bool is_installed() const noexcept {
+      return m_installed;
+    }
+
+    constexpr std::vector<impl::pointer> const& get_targets() noexcept {
+      return m_targets;
+    }
+
+    constexpr std::vector<impl::pointer> const& get_targets() const noexcept {
+      return m_targets;
+    }
+
+    constexpr callback_type& get_callback() noexcept {
+      return m_callback;
+    }
+
+    constexpr callback_type const& get_callback() const noexcept {
+      return m_callback;
+    }
+
+    constexpr function_pointer_type get_target_function() const noexcept {
+      return m_target_function;
+    }
+
+    template <typename... ArgsT>
+    constexpr return_type call(ArgsT... args) noexcept {
+      return get_target_function()(args...);
+    }
+
+    constexpr bool install() noexcept {
+      if (m_installed)
+        return false;
+
+      if (not _generate_code())
+        return false;
+
+      if (not _do_hook(true))
+        return false;
+
+      return m_installed = true;
+    }
+
+    constexpr void remove() noexcept {
+      if (not m_installed)
+        return;
+
+      _do_hook(false);
+
+      m_installed = false;
+    }
+
+  private:
+
+    constexpr bool _generate_code() {
+      if (m_code_generated)
+        return true;
+
+      m_relay_jumper = impl::assembly::generate_relay_jumper<function_traits>(m_code, this, &relay_generator::relay);
+
+      return m_code_generated = true;
+    }
+
+    constexpr bool _do_hook(bool state) noexcept {
+      using namespace impl;
+
+      for (const auto& target : m_targets) {
+        mem::allow_write(target, 5);
+
+        impl::pointer call_address;
+        if (state)
+          call_address = m_relay_jumper - (target + 5);
+        else
+          call_address = m_target_function - (target + 5);
+
+        mem::write(target + 1, call_address);
+
+        mem::forbid_write(target, 5);
+      }
+
+      return true;
+    }
+
+  private:
+    bool m_installed = false;
+    bool m_code_generated = false;
+    
+    impl::pointer m_target_function;
+    
+    // sadly can't use std::set because it's not constexpr
+    std::vector<impl::pointer> m_targets;
+    impl::pointer m_relay_jumper;
 
     callback_type m_callback;
 

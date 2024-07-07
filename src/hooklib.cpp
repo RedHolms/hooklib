@@ -32,6 +32,7 @@ void flush_instruction_cache(pointer address, size_t size) noexcept {
 }
 
 void allow_execute(pointer address, size_t size) noexcept {
+#if HKLIB_SYSTEM == HKLIB_WINDOWS
   DWORD protection;
   VirtualProtect(address, size, PAGE_NOACCESS, &protection);
   
@@ -39,9 +40,11 @@ void allow_execute(pointer address, size_t size) noexcept {
     VirtualProtect(address, size, PAGE_EXECUTE_READ, &protection);
   else
     VirtualProtect(address, size, PAGE_EXECUTE_READWRITE, &protection);
+#endif
 }
 
 void forbid_execute(pointer address, size_t size) noexcept {
+#if HKLIB_SYSTEM == HKLIB_WINDOWS
   DWORD protection;
   VirtualProtect(address, size, PAGE_NOACCESS, &protection);
   
@@ -49,9 +52,11 @@ void forbid_execute(pointer address, size_t size) noexcept {
     VirtualProtect(address, size, PAGE_READONLY, &protection);
   else
     VirtualProtect(address, size, PAGE_READWRITE, &protection);
+#endif
 }
 
 void allow_write(pointer address, size_t size) noexcept {
+#if HKLIB_SYSTEM == HKLIB_WINDOWS
   DWORD protection;
   VirtualProtect(address, size, PAGE_NOACCESS, &protection);
   
@@ -59,9 +64,11 @@ void allow_write(pointer address, size_t size) noexcept {
     VirtualProtect(address, size, PAGE_READWRITE, &protection);
   else
     VirtualProtect(address, size, PAGE_EXECUTE_READWRITE, &protection);
+#endif
 }
 
 void forbid_write(pointer address, size_t size) noexcept {
+#if HKLIB_SYSTEM == HKLIB_WINDOWS
   DWORD protection;
   VirtualProtect(address, size, PAGE_NOACCESS, &protection);
   
@@ -69,6 +76,7 @@ void forbid_write(pointer address, size_t size) noexcept {
     VirtualProtect(address, size, PAGE_READONLY, &protection);
   else
     VirtualProtect(address, size, PAGE_EXECUTE_READ, &protection);
+#endif
 }
 
 } // namespace mem
