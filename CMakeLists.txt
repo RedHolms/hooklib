@@ -6,4 +6,6 @@ add_library(hooklib STATIC "src/hooklib.cpp" "include/hooklib.hpp")
 target_include_directories(hooklib PUBLIC "include")
 set_target_properties(hooklib PROPERTIES CXX_STANDARD 20)
 
-add_subdirectory("examples")
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  add_subdirectory("examples")
+endif()

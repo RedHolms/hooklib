@@ -9,5 +9,4 @@ Current roadmap:
 - [ ] VMT hooks
 - [X] Simple call hooks
   
-At this time, you can build this project only in 32-bit mode with MSVC on Windows.  
-I'm really don't like how it's implimented, but I'm too tired to make it better.  
+At this time, you can build this project only in 32-bit mode with MSVC or Clang on Windows.

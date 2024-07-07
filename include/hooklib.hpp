@@ -9,6 +9,7 @@
 #include <numeric>
 #include <tuple>
 #include <set>
+#include <type_traits>
 
 // HKLIB_ARCH
 #define HKLIB_X86 0
@@ -32,9 +33,9 @@
 #endif
 
 #if HKLIB_ARCH == HKLIB_X86
-#include <hooklib/hde32.h>
+#include "hooklib/hde32.h"
 #else
-#include <hooklib/hde64.h>
+#include "hooklib/hde64.h"
 #endif
 
 namespace hooklib {
@@ -147,9 +148,14 @@ namespace hooklib {
       using return_type = RetT;
 
       static constexpr size_t get_arguments_size_in_bytes() {
-        constexpr size_t arguments_sizes[] = { sizeof(ArgsT)... };
+        if constexpr (arguments_count == 0) {
+          return 0;
+        }
+        else {
+          constexpr size_t arguments_sizes[] = { sizeof(ArgsT)... };
 
-        return std::accumulate(std::begin(arguments_sizes) + get_registers_count(), std::end(arguments_sizes), 0);
+          return std::accumulate(std::begin(arguments_sizes) + get_registers_count(), std::end(arguments_sizes), 0);
+        }
       }
 
       static constexpr size_t get_stack_frame_size() {
@@ -684,15 +690,15 @@ namespace hooklib {
     using relay_generator = impl::function_hook_relay_generator<type, function_traits>;
 
   public:
-    constexpr function_hook() = default;
+    inline function_hook() = default;
 
-    constexpr function_hook(impl::pointer target_function_address)
+    inline function_hook(impl::pointer target_function_address)
       : function_hook()
     {
       set_target(target_function_address);
     }
 
-    constexpr ~function_hook() {
+    inline ~function_hook() {
       remove();
     }
 
@@ -841,15 +847,15 @@ namespace hooklib {
     using relay_generator = impl::call_hook_relay_generator<type, function_traits>;
 
   public:
-    call_hook() = default;
+    inline call_hook() = default;
 
-    constexpr call_hook(impl::pointer target_function_address)
+    inline call_hook(impl::pointer target_function_address)
       : call_hook()
     {
       add_target(target_function_address);
     }
 
-    constexpr ~call_hook() {
+    inline ~call_hook() {
       remove();
     }
 
@@ -1053,15 +1059,15 @@ namespace hooklib {
     using relay_generator = impl::naked_hook_relay_generator<type, context_type>;
 
   public:
-    naked_hook() = default;
+    inline naked_hook() = default;
 
-    naked_hook(impl::pointer target_address)
+    inline naked_hook(impl::pointer target_address)
       : naked_hook()
     {
       set_target(target_address);
     }
 
-    ~naked_hook() {
+    inline ~naked_hook() {
       remove();
     }
 
