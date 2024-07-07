@@ -281,6 +281,14 @@ namespace hooklib {
         return hook->call(args...);
       }
 
+      template <typename HookT, typename CtxT>
+      inline void naked_hook_relay(HookT* hook, CtxT& ctx) {
+        auto callback = hook->get_callback();
+
+        if (callback)
+          return callback(ctx);
+      }
+
     } // namespace relay
 
     template <typename HookT, typename FnTrT>
@@ -303,13 +311,20 @@ namespace hooklib {
       }
     };
 
+    template <typename HookT, typename CtxT>
+    struct naked_hook_relay_generator {
+      static void __cdecl relay(HookT* hook, CtxT& ctx) {
+        return relay::naked_hook_relay<HookT, CtxT>(hook, ctx);
+      }
+    };
+
     namespace assembly {
 
       static constexpr size_t page_size = 4096;
 
       class code_array {
       public:
-        code_array() {
+        constexpr code_array() {
           m_p = m_frame = m_data = mem::alloc_aligned(page_size);
 
           mem::forbid_execute(m_data, page_size);
@@ -371,6 +386,10 @@ namespace hooklib {
           mem::allow_write(m_data, page_size);
         }
 
+        constexpr void clear_frame() noexcept {
+          m_p = m_frame;
+        }
+
         constexpr pointer flush() noexcept {
           mem::forbid_write(m_frame, frame_size());
           mem::allow_execute(m_data, frame_size());
@@ -388,7 +407,7 @@ namespace hooklib {
       };
 
       template <typename FnTrT>
-      static constexpr pointer generate_relay_jumper(assembly::code_array& code, pointer hook, pointer relay_address) {
+      static constexpr pointer generate_cdecl_relay_jumper(assembly::code_array& code, pointer hook, pointer relay_address) {
         // push ecx to the stack as an argument
         if (FnTrT::calling_convention == cthiscall) {
           // sub esp, 4
@@ -519,6 +538,123 @@ namespace hooklib {
         return code.flush();
       }
 
+      static constexpr pointer generate_naked_relay_jumper(assembly::code_array& code, pointer hook, pointer relay_address) {
+        // pushad
+        code.write<uint8_t>(0x60);
+
+        // pushf
+        code.write<uint8_t>(0x9C);
+
+        // push esp
+        code.write<uint8_t>(0x54);
+
+        // push this
+        code.write<uint8_t>(0x68);
+        code.write<pointer>(hook);
+
+        // call relay_generator::relay
+        code.op_rel_call(relay_address);
+
+        // add esp, 8
+        code.write<uint8_t>(0x83);
+        code.write<uint8_t>(0xC4);
+        code.write<uint8_t>(0x08);
+
+        // popf
+        code.write<uint8_t>(0x9D);
+
+        // popad
+        code.write<uint8_t>(0x61);
+
+        return code.flush();
+      }
+
+      static constexpr pointer generate_trampoline(assembly::code_array& code, pointer target, pointer out_original_code, size_t* out_original_code_size) {
+        using namespace hde;
+
+        hde32s hde;
+        uintptr_t current = target;
+        bool need_jump = true;
+
+        while (true) {
+          if (current - static_cast<ptrdiff_t>(target) >= 5)
+            break;
+
+          need_jump = true;
+
+          hde32_disasm(pointer(current), &hde);
+          
+          if (hde.flags & F_ERROR) {
+            code.clear_frame();
+            return nullptr;
+          }
+
+          if (hde.opcode == 0xE8) {
+            uintptr_t absolute_target = static_cast<int32_t>(hde.imm.imm32) + current + 5;
+
+            code.op_rel_call(absolute_target);
+          }
+          else if (hde.opcode == 0xE9 || hde.opcode == 0xEB) {
+            uintptr_t absolute_target;
+
+            if (hde.opcode == 0xE9)
+              absolute_target = static_cast<int32_t>(hde.imm.imm32) + current + 5;
+            else /* hde.opcode == 0xEB */
+              absolute_target = static_cast<int8_t>(hde.imm.imm8) + current + 5;
+
+            code.op_rel_jump(absolute_target);
+
+            need_jump = false;
+          }
+          else if (
+            (hde.opcode >= 0x70 && hde.opcode <= 0x7F) || // conditional 1-byte jump
+            (hde.opcode == 0xF0 && hde.opcode2 >= 0x80 && hde.opcode2 <= 0x8F) // conditional 4-byte jump
+          ) {
+            uintptr_t absolute_target;
+
+            if (hde.flags & F_IMM32)
+              absolute_target = static_cast<int32_t>(hde.imm.imm32) + current + 5;
+            else /* hde.flags & F_IMM8 */
+              absolute_target = static_cast<int8_t>(hde.imm.imm8) + current + 5;
+
+            uint8_t condition;
+
+            if (hde.opcode == 0xF0)
+              condition = hde.opcode2;
+            else
+              condition = hde.opcode & 0x0F;
+
+            code.write<uint8_t>(0xF0);
+            code.write<uint8_t>(0x80 | condition);
+            code.write<uint32_t>(absolute_target - static_cast<ptrdiff_t>(code.current()) - 4);
+          }
+          else if (
+            (hde.opcode >= 0xE0 && hde.opcode <= 0xE2) || // loop (1-byte)
+            hde.opcode == 0xE3 // jump if ECX is 0
+          ) {
+            // FIXME
+            // unsupported
+            code.clear_frame();
+            return nullptr;
+          }
+          else {
+            code.write_bytes(current, hde.len);
+          }
+
+          current += hde.len;
+        }
+
+        out_original_code_size[0] = current - target.value;
+        mem::copy(out_original_code, target, out_original_code_size[0]);
+
+        if (need_jump) {
+          uintptr_t function_continue = target.value + out_original_code_size[0];
+          code.op_rel_jump(function_continue);
+        }
+
+        return code.flush();
+      }
+
     }
 
   } // namespace impl
@@ -562,6 +698,9 @@ namespace hooklib {
 
   public:
     constexpr void set_target(impl::pointer target_function_address) noexcept {
+      if (m_installed)
+        return;
+
       m_target = target_function_address;
 
       m_code.clear();
@@ -649,7 +788,7 @@ namespace hooklib {
       if (m_code_generated)
         return true;
 
-      m_relay_jumper = impl::assembly::generate_relay_jumper<function_traits>(m_code, this, &relay_generator::relay);
+      m_relay_jumper = impl::assembly::generate_cdecl_relay_jumper<function_traits>(m_code, this, &relay_generator::relay);
 
       if (not _generate_trampoline())
         return false;
@@ -658,90 +797,7 @@ namespace hooklib {
     }
 
     constexpr bool _generate_trampoline() {
-      using namespace impl;
-      using namespace impl::hde;
-
-      hde32s hde;
-      uintptr_t current = m_target;
-      bool need_jump = true;
-
-      while (true) {
-        if (current - static_cast<ptrdiff_t>(m_target) >= 5) {
-          break;
-        }
-
-        need_jump = true;
-
-        hde32_disasm(pointer(current), &hde);
-        
-        if (hde.flags & F_ERROR)
-          return false;
-
-        if (hde.opcode == 0xE8) {
-          uintptr_t absolute_target = static_cast<int32_t>(hde.imm.imm32) + current + 5;
-
-          m_code.op_rel_call(absolute_target);
-        }
-        else if (hde.opcode == 0xE9 || hde.opcode == 0xEB) {
-          uintptr_t absolute_target;
-
-          if (hde.opcode == 0xE9)
-            absolute_target = static_cast<int32_t>(hde.imm.imm32) + current + 5;
-          else /* hde.opcode == 0xEB */
-            absolute_target = static_cast<int8_t>(hde.imm.imm8) + current + 5;
-
-          m_code.op_rel_jump(absolute_target);
-
-          need_jump = false;
-        }
-        else if (
-          (hde.opcode >= 0x70 && hde.opcode <= 0x7F) || // conditional 1-byte jump
-          (hde.opcode == 0xF0 && hde.opcode2 >= 0x80 && hde.opcode2 <= 0x8F) // conditional 4-byte jump
-        ) {
-          uintptr_t absolute_target;
-
-          if (hde.flags & F_IMM32)
-            absolute_target = static_cast<int32_t>(hde.imm.imm32) + current + 5;
-          else /* hde.flags & F_IMM8 */
-            absolute_target = static_cast<int8_t>(hde.imm.imm8) + current + 5;
-
-          uint8_t condition;
-
-          if (hde.opcode == 0xF0)
-            condition = hde.opcode2;
-          else
-            condition = hde.opcode & 0x0F;
-
-          m_code.write<uint8_t>(0xF0);
-          m_code.write<uint8_t>(0x80 | condition);
-          m_code.write<uint32_t>(absolute_target - static_cast<ptrdiff_t>(m_code.current()) - 4);
-        }
-        else if (
-          (hde.opcode >= 0xE0 && hde.opcode <= 0xE2) || // loop (1-byte)
-          hde.opcode == 0xE3 // jump if ECX is 0
-        ) {
-          // FIXME
-          // unsupported
-          return false;
-        }
-        else {
-          m_code.write_bytes(current, hde.len);
-        }
-
-        current += hde.len;
-      }
-
-      m_original_prologue_size = current - m_target.value;
-      mem::copy(m_original_prologue, m_target, m_original_prologue_size);
-
-      if (need_jump) {
-        uintptr_t function_continue = m_target.value + m_original_prologue_size;
-        m_code.op_rel_jump(function_continue);
-      }
-
-      m_trampoline = m_code.flush();
-
-      return true;
+      return m_trampoline = impl::assembly::generate_trampoline(m_code, m_target, m_original_prologue, &m_original_prologue_size);
     }
 
   private:
@@ -785,7 +841,7 @@ namespace hooklib {
     using relay_generator = impl::call_hook_relay_generator<type, function_traits>;
 
   public:
-    constexpr call_hook() = default;
+    call_hook() = default;
 
     constexpr call_hook(impl::pointer target_function_address)
       : call_hook()
@@ -894,7 +950,7 @@ namespace hooklib {
       if (m_code_generated)
         return true;
 
-      m_relay_jumper = impl::assembly::generate_relay_jumper<function_traits>(m_code, this, &relay_generator::relay);
+      m_relay_jumper = impl::assembly::generate_cdecl_relay_jumper<function_traits>(m_code, this, &relay_generator::relay);
 
       return m_code_generated = true;
     }
@@ -913,6 +969,7 @@ namespace hooklib {
 
         mem::write(target + 1, call_address);
 
+        mem::flush_instruction_cache(target, 5);
         mem::forbid_write(target, 5);
       }
 
@@ -928,6 +985,191 @@ namespace hooklib {
     // sadly can't use std::set because it's not constexpr
     std::vector<impl::pointer> m_targets;
     impl::pointer m_relay_jumper;
+
+    callback_type m_callback;
+
+    impl::assembly::code_array m_code;
+  };
+
+  // fields spaced the way we can just use "pushf" and "pushad" to make naked_context on stack
+  class naked_context {
+  public:
+    naked_context() = default;
+
+    union {
+      struct { uint32_t eflags; };
+      struct { uint16_t flags; };
+    };
+
+    union {
+      struct { uint32_t edi; };
+      struct { uint16_t di; };
+      struct { uint8_t dil; };
+    };
+    union {
+      struct { uint32_t esi; };
+      struct { uint16_t si; };
+      struct { uint8_t sil; };
+    };
+    union {
+      struct { uint32_t ebp; };
+      struct { uint16_t bp; };
+      struct { uint8_t bpl; };
+    };
+    union {
+      struct { uint32_t esp; };
+      struct { uint16_t sp; };
+      struct { uint8_t spl; };
+    };
+    union {
+      struct { uint32_t ebx; };
+      struct { uint16_t bx; };
+      struct { uint8_t bl; uint8_t bh; };
+    };
+    union {
+      struct { uint32_t edx; };
+      struct { uint16_t dx; };
+      struct { uint8_t dl; uint8_t dh; };
+    };
+    union {
+      struct { uint32_t ecx; };
+      struct { uint16_t cx; };
+      struct { uint8_t cl; uint8_t ch; };
+    };
+    union {
+      struct { uint32_t eax; };
+      struct { uint16_t ax; };
+      struct { uint8_t al; uint8_t ah; };
+    };
+  };
+
+  class naked_hook {
+  public:
+    using type = naked_hook;
+
+    using context_type = naked_context;
+    using callback_type = impl::build_function_t<void, std::tuple<context_type&>>;
+
+    using relay_generator = impl::naked_hook_relay_generator<type, context_type>;
+
+  public:
+    naked_hook() = default;
+
+    naked_hook(impl::pointer target_address)
+      : naked_hook()
+    {
+      set_target(target_address);
+    }
+
+    ~naked_hook() {
+      remove();
+    }
+
+  public:
+    constexpr void set_target(impl::pointer target_address) noexcept {
+      if (m_installed)
+        return;
+
+      m_target = target_address;
+
+      m_code.clear();
+      m_code_generated = false;
+    }
+
+    constexpr void set_callback(callback_type const& callback) noexcept {
+      m_callback = callback;
+    }
+
+    constexpr bool is_installed() const noexcept {
+      return m_installed;
+    }
+
+    constexpr impl::pointer get_target() const noexcept {
+      return m_target;
+    }
+
+    constexpr callback_type& get_callback() noexcept {
+      return m_callback;
+    }
+
+    constexpr callback_type const& get_callback() const noexcept {
+      return m_callback;
+    }
+
+    constexpr bool install() noexcept {
+      if (m_installed)
+        return false;
+
+      if (not m_target)
+        return false;
+
+      if (not _generate_code())
+        return false;
+
+      if (not _do_hook(true))
+        return false;
+
+      return m_installed = true;
+    }
+
+    constexpr void remove() noexcept {
+      if (not m_installed)
+        return;
+
+      _do_hook(false);
+
+      m_installed = false;
+    }
+
+  private:
+    constexpr bool _do_hook(bool state) noexcept {
+      using namespace impl;
+
+      mem::allow_write(m_target, m_original_code_size);
+
+      if (state) {
+        mem::fill<uint8_t>(m_target, m_original_code_size, 0x90);
+
+        // Relative jump to m_relay_jumper
+        mem::write<uint8_t>(m_target, 0xE9);
+        mem::write<uint32_t>(m_target + 1, m_relay_jumper.value - m_target.value - 5);
+      }
+      else {
+        mem::copy(m_target, m_original_code, m_original_code_size);
+      }
+
+      mem::flush_instruction_cache(m_target, m_original_code_size);
+      mem::forbid_write(m_target, m_original_code_size);
+
+      return true;
+    }
+
+    constexpr bool _generate_code() {
+      if (m_code_generated)
+        return true;
+
+      m_relay_jumper = impl::assembly::generate_naked_relay_jumper(m_code, this, &relay_generator::relay);
+
+      if (not _generate_trampoline())
+        return false;
+
+      return m_code_generated = true;
+    }
+  
+    constexpr bool _generate_trampoline() {
+      return m_trampoline = impl::assembly::generate_trampoline(m_code, m_target, m_original_code, &m_original_code_size);
+    }
+
+  private:
+    bool m_installed = false;
+    bool m_code_generated = false;
+
+    uint8_t m_original_code[4 + 15] = { 0 };
+    size_t m_original_code_size = 0;
+    
+    impl::pointer m_target;
+    impl::pointer m_relay_jumper;
+    impl::pointer m_trampoline;
 
     callback_type m_callback;
 
