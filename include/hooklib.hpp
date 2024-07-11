@@ -330,14 +330,14 @@ namespace hooklib {
 
       class code_array {
       public:
-        constexpr code_array() {
+        inline code_array() {
           m_p = m_frame = m_data = mem::alloc_aligned(page_size);
 
           mem::forbid_execute(m_data, page_size);
           mem::allow_write(m_data, page_size);
         }
 
-        constexpr ~code_array() {
+        inline ~code_array() {
           mem::free_aligned(m_data);
         }
 
@@ -387,7 +387,7 @@ namespace hooklib {
           return m_p - m_frame;
         }
 
-        constexpr void clear() noexcept {
+        inline void clear() noexcept {
           m_p = m_frame = m_data;
           mem::allow_write(m_data, page_size);
         }
@@ -396,7 +396,7 @@ namespace hooklib {
           m_p = m_frame;
         }
 
-        constexpr pointer flush() noexcept {
+        inline pointer flush() noexcept {
           mem::forbid_write(m_frame, frame_size());
           mem::allow_execute(m_data, frame_size());
 
@@ -544,7 +544,7 @@ namespace hooklib {
         return code.flush();
       }
 
-      static constexpr pointer generate_naked_relay_jumper(assembly::code_array& code, pointer hook, pointer relay_address) {
+      static inline pointer generate_naked_relay_jumper(assembly::code_array& code, pointer hook, pointer relay_address) {
         // pushad
         code.write<uint8_t>(0x60);
 
@@ -575,7 +575,7 @@ namespace hooklib {
         return code.flush();
       }
 
-      static constexpr pointer generate_trampoline(assembly::code_array& code, pointer target, pointer out_original_code, size_t* out_original_code_size) {
+      static inline pointer generate_trampoline(assembly::code_array& code, pointer target, pointer out_original_code, size_t* out_original_code_size) {
         using namespace hde;
 
         hde32s hde;
@@ -1082,7 +1082,7 @@ namespace hooklib {
       m_code_generated = false;
     }
 
-    constexpr void set_callback(callback_type const& callback) noexcept {
+    inline void set_callback(callback_type const& callback) noexcept {
       m_callback = callback;
     }
 
@@ -1128,7 +1128,7 @@ namespace hooklib {
     }
 
   private:
-    constexpr bool _do_hook(bool state) noexcept {
+    inline bool _do_hook(bool state) noexcept {
       using namespace impl;
 
       mem::allow_write(m_target, m_original_code_size);
