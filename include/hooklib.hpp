@@ -1,5 +1,13 @@
 #pragma once
 
+#ifndef _WIN32
+#error "Only windows"
+#endif
+
+#ifdef _WIN64
+#error "Only 32 bit"
+#endif
+
 #include <cstddef>
 #include <cstdint>
 #include <stdint.h>
@@ -111,13 +119,13 @@ namespace hooklib {
     struct make_traits;
     
     template <typename FnT>
-    using make_traits_t = make_traits<FnT>::type;
+    using make_traits_t = typename make_traits<FnT>::type;
 
     template <typename FnTrT>
     struct make_function;
     
     template <typename FnTrT>
-    using make_function_t = make_function<FnTrT>::type;
+    using make_function_t = typename make_function<FnTrT>::type;
 
     enum call_conv {
       ccdecl,
@@ -134,15 +142,15 @@ namespace hooklib {
     };
 
     template <typename RetT, typename ArgsTplT>
-    using build_function_t = build_function<RetT, ArgsTplT>::type;
+    using build_function_t = typename build_function<RetT, ArgsTplT>::type;
 
     template <typename RetT, call_conv CallConv, typename... ArgsT>
     struct function_traits {
       using type = function_traits<RetT, CallConv, ArgsT...>;
 
       using connected_function    = make_function<type>;
-      using function_type         = connected_function::type;
-      using function_pointer_type = connected_function::pointer_type;
+      using function_type         = typename connected_function::type;
+      using function_pointer_type = typename connected_function::pointer_type;
 
       using arguments_type = std::tuple<ArgsT...>;
       using return_type = RetT;
@@ -672,11 +680,11 @@ namespace hooklib {
 
     using function_traits = impl::make_traits_t<FnT>;
 
-    using function_type = function_traits::function_type;
-    using function_pointer_type = function_traits::function_pointer_type;
+    using function_type = typename function_traits::function_type;
+    using function_pointer_type = typename function_traits::function_pointer_type;
 
-    using arguments_type = function_traits::arguments_type;
-    using return_type = function_traits::return_type;
+    using arguments_type = typename function_traits::arguments_type;
+    using return_type = typename function_traits::return_type;
 
     static constexpr auto arguments_count = function_traits::arguments_count;
     static constexpr auto stack_frame_size = function_traits::stack_frame_size;
@@ -829,11 +837,11 @@ namespace hooklib {
 
     using function_traits = impl::make_traits_t<FnT>;
 
-    using function_type = function_traits::function_type;
-    using function_pointer_type = function_traits::function_pointer_type;
+    using function_type = typename function_traits::function_type;
+    using function_pointer_type = typename function_traits::function_pointer_type;
 
-    using arguments_type = function_traits::arguments_type;
-    using return_type = function_traits::return_type;
+    using arguments_type = typename function_traits::arguments_type;
+    using return_type = typename function_traits::return_type;
 
     static constexpr auto arguments_count = function_traits::arguments_count;
     static constexpr auto stack_frame_size = function_traits::stack_frame_size;
@@ -1106,20 +1114,20 @@ namespace hooklib {
       if (m_installed)
         return false;
 
-      if (not m_target)
+      if (!m_target)
         return false;
 
-      if (not _generate_code())
+      if (!_generate_code())
         return false;
 
-      if (not _do_hook(true))
+      if (!_do_hook(true))
         return false;
 
       return m_installed = true;
     }
 
     constexpr void remove() noexcept {
-      if (not m_installed)
+      if (!m_installed)
         return;
 
       _do_hook(false);
@@ -1156,7 +1164,7 @@ namespace hooklib {
 
       m_relay_jumper = impl::assembly::generate_naked_relay_jumper(m_code, this, &relay_generator::relay);
 
-      if (not _generate_trampoline())
+      if (!_generate_trampoline())
         return false;
 
       return m_code_generated = true;
