@@ -143,7 +143,7 @@ void FuncHookImpl::Install() {
     as.byte(offsetof(HookedCallData, returnValue));       // <imm8>
 
     // Restore stack space
-    as.bytes({ 0x48, 0x81, 0xc4 });                       // sub rsp, <imm32>
+    as.bytes({ 0x48, 0x81, 0xc4 });                       // add rsp, <imm32>
     as.dword(bytesToAlloc);                               // <imm32>
 
     // Return!
@@ -153,7 +153,7 @@ void FuncHookImpl::Install() {
     // CONTINUE_ORIGINAL:
 
     // Restore stack space
-    as.bytes({ 0x48, 0x81, 0xc4 });                       // sub rsp, <imm32>
+    as.bytes({ 0x48, 0x81, 0xc4 });                       // add rsp, <imm32>
     as.dword(bytesToAlloc);                               // <imm32>
 
     // Restore registers from the shadow space
