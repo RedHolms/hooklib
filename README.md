@@ -20,7 +20,14 @@ Also at the start library will be C++ only and only once it's working I will
   - [ ] Implement ARM(32 and 64) for SysV
   - [ ] Implement ARM(32 and 64) for Windows
 
-## Examples
+## MORE THINGS TO-DO
+  - [ ] Add a LOT of tests for all classes
+  - [ ] Fix trampolines (I'm 99% SURE that I've made some mistakes when stealing code,
+        so I need tests)
+  - [ ] Refactor AssemblyPool
+  - [ ] Figure out how to return errors
+
+## Examples (just concepts for now)
 ```c++
 #include <HookLib.hpp>
 
