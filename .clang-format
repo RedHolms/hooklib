@@ -1,0 +1,44 @@
+BasedOnStyle: Mozilla
+BinPackLongBracedList: true
+NamespaceIndentation: None
+IncludeBlocks: Preserve
+TabWidth: 2
+ContinuationIndentWidth: 2
+KeepEmptyLines:
+  AtStartOfFile: false
+  AtEndOfFile: true
+  AtStartOfBlock: false
+InsertNewlineAtEOF: true
+ColumnLimit: 100
+LineEnding: LF
+UseTab: Never
+ReferenceAlignment: Left
+PointerAlignment: Left
+IndentCaseLabels: true
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortEnumsOnASingleLine: false
+PenaltyBreakBeforeFirstCallParameter: 0
+BreakTemplateDeclarations: Yes
+AlignConsecutiveMacros: AcrossEmptyLines
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: false
+  AfterEnum: false
+  AfterFunction: false
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: true
+  BeforeElse: true
+  IndentBraces: false
+PackConstructorInitializers: CurrentLine
+BreakConstructorInitializers: BeforeColon
+SpaceBeforeCpp11BracedList: true
+BreakAfterReturnType: Automatic
+SpaceAfterTemplateKeyword: true
+AlignAfterOpenBracket: BlockIndent
+PenaltyBreakOpenParenthesis: 0
+PenaltyReturnTypeOnItsOwnLine: 1000
+BinPackArguments: false
+BinPackParameters: false
