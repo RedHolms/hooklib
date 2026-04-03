@@ -2,59 +2,21 @@
 
 #include "FuncUtils.hpp"
 #include "HookLib/Utils.hpp"
+#include <bit>
 #include <functional>
 #include <memory>
 
 namespace HookLib {
 
 template <typename FuncT>
+class HookedCall;
+
+template <typename FuncT>
 class FunctionHook;
 
 namespace Details {
 
-struct FuncHookOpts {
-  bool xmmRetVal;
-  bool xmmReg[4];
-
-  template <typename FuncT>
-  static consteval FuncHookOpts GetForFunc() noexcept {
-    using FInfo = FuncTypeInfo<FuncT>;
-
-    FuncHookOpts result {};
-    result.xmmRetVal = IsOneOf<typename FInfo::ReturnType, float, double, __m128, __m128i, __m128d>;
-
-    FInfo::ArgsCollection::ForEach([&result]<typename T>(std::type_identity<T>, size_t index) {
-      result.xmmReg[index] = IsOneOf<T, float, double>;
-    });
-
-    return result;
-  }
-};
-
-using FuncHookRelay = void (*)(void* callObj, void* payload);
-
-class FuncHookImpl {
-public:
-  explicit FuncHookImpl(
-    FuncHookOpts const& options,
-    uintptr_t target,
-    FuncHookRelay relay,
-    void* relayPayload
-  );
-  ~FuncHookImpl();
-
-public:
-  uintptr_t GetTarget() const noexcept;
-  void SetTarget(uintptr_t target) noexcept;
-
-  void Install();
-  void Remove();
-
-private:
-  struct Data;
-  std::unique_ptr<Data> m;
-};
-
+// FIXME: We need only lower 64 bits from XMM anyway, so why allocating so much space?
 __declspec(align(16)) union HookedReg {
   // Used if respective FuncInfo::xmmReg[N] is true
   __m128 xmm;
@@ -79,8 +41,8 @@ __declspec(align(16)) struct HookedCallData {
   // Address of where stack arguments of a function will start
   uintptr_t stackArgsStart;
 
-  // Unused. Just an explicit padding for "returnValue"
-  uintptr_t __padding;
+  // Address of HookedCall<> object
+  uintptr_t hookObject;
 
   // Return value to be used if original call was canceled
   // What field in union will be used (rax or xmm0) is determined by FuncHookOpts::xmmRetVal
@@ -92,31 +54,61 @@ __declspec(align(16)) struct HookedCallData {
 
 static_assert(sizeof(HookedCallData) == 48, "Invalid HookedCallData size");
 
-} // namespace Details
+using FuncHookRelay = void (*)(HookedCallData* callObj);
+
+struct FuncHookOpts {
+  bool xmmRetVal;
+  bool xmmReg[4];
+
+  template <typename FuncT>
+  static consteval FuncHookOpts GetForFunc() noexcept {
+    using FInfo = FuncTypeInfo<FuncT>;
+
+    FuncHookOpts result {};
+    result.xmmRetVal = IsOneOf<typename FInfo::ReturnType, float, double, __m128, __m128i, __m128d>;
+
+    FInfo::ArgsCollection::ForEach([&result]<typename T>(std::type_identity<T>, size_t index) {
+      result.xmmReg[index] = IsOneOf<T, float, double>;
+    });
+
+    return result;
+  }
+};
+
+class FuncHookImpl {
+public:
+  explicit FuncHookImpl(
+    FuncHookOpts const& options,
+    uintptr_t target,
+    FuncHookRelay relay,
+    void* relayPayload
+  );
+  ~FuncHookImpl();
+
+public:
+  uintptr_t GetTarget() const noexcept;
+  void SetTarget(uintptr_t target) noexcept;
+
+  uintptr_t GetTrampoline() const noexcept;
+
+  void Install();
+  void Remove();
+
+private:
+  struct Data;
+  std::unique_ptr<Data> m;
+};
 
 template <typename FuncT>
-class HookedCall final : private Details::HookedCallData {
+class _HookedCallBase0 : protected HookedCallData {
 private:
-  using FuncInfo = Details::FuncTypeInfo<FuncT>;
+  using FuncInfo = FuncTypeInfo<FuncT>;
 
-private:
-  // This class is constructed in assembly
-  HookedCall() = delete;
-  ~HookedCall() = delete;
-  HookedCall(HookedCall const&) = delete;
-  HookedCall(HookedCall&&) = delete;
-  HookedCall& operator=(HookedCall const&) = delete;
-  HookedCall& operator=(HookedCall&&) = delete;
-
-private:
 public:
-  __forceinline void Cancel() noexcept {
-    canceled = true;
-  }
-
-  __forceinline void SetReturnValue(uintptr_t rax) noexcept {
-    canceled = true;
-    returnValue.rax = rax;
+  template <typename... ArgsT>
+  constexpr auto CallOriginal(ArgsT&&... args) const noexcept {
+    auto func = std::bit_cast<typename FuncInfo::PtrType>(GetHook()->GetTrampoline());
+    return std::invoke(func, std::forward<ArgsT>(args)...);
   }
 
   // Get reference to an argument at index "I"
@@ -155,6 +147,78 @@ public:
       }
     }
   }
+
+protected:
+  constexpr FuncHookImpl* GetHook() const noexcept {
+    return reinterpret_cast<FuncHookImpl*>(hookObject);
+  }
+};
+
+template <typename FuncT>
+class _HookedCallBase1_VoidRet : public _HookedCallBase0<FuncT> {
+public:
+  constexpr void Cancel() noexcept {
+    this->canceled = true;
+  }
+};
+
+template <typename FuncT>
+class _HookedCallBase1_NonVoidRet : public _HookedCallBase0<FuncT> {
+private:
+  using FuncInfo = FuncTypeInfo<FuncT>;
+
+public:
+  constexpr void SetReturnValue(FuncInfo::ReturnType const& retVal) noexcept {
+    // TODO big values (ptr as first parameter)
+    using RetT = FuncInfo::ReturnType;
+
+    constexpr bool xmmRet = FuncHookOpts::GetForFunc<FuncT>().xmmRetVal;
+
+    if constexpr (xmmRet) {
+      auto& xmmRef = this->returnValue.xmm0;
+
+      if constexpr (std::is_same_v<RetT, float>) {
+        xmmRef.m128_f32[0] = retVal;
+      }
+      else if constexpr (std::is_same_v<RetT, double>) {
+        std::bit_cast<__m128d*>(&xmmRef)->m128d_f64[0] = retVal;
+      }
+      else if constexpr (std::is_same_v<RetT, __m128> || std::is_same_v<RetT, __m128d> ||
+                         std::is_same_v<RetT, __m128i>) {
+        xmmRef = std::bit_cast<__m128>(retVal);
+      }
+      else {
+        static_assert(false, "Invalid XMM return type");
+      }
+    }
+    else {
+      this->returnValue.rax = retVal;
+    }
+
+    this->canceled = true;
+  }
+};
+
+// Implements return values
+template <typename FuncT>
+using _HookedCallBase1 = std::conditional_t<
+  std::is_void_v<typename FuncTypeInfo<FuncT>::ReturnType>,
+  _HookedCallBase1_VoidRet<FuncT>,
+  _HookedCallBase1_NonVoidRet<FuncT>>;
+
+template <typename FuncT>
+class _HookedCallBase : public _HookedCallBase1<FuncT> {};
+
+} // namespace Details
+
+template <typename FuncT>
+class HookedCall final : public Details::_HookedCallBase<FuncT> {
+  HookedCall() = delete;
+  ~HookedCall() = delete;
+  HookedCall(HookedCall const&) = delete;
+  HookedCall(HookedCall&&) = delete;
+  HookedCall& operator=(HookedCall const&) = delete;
+  HookedCall& operator=(HookedCall&&) = delete;
 };
 
 /**
@@ -167,10 +231,10 @@ public:
   using Callback = std::function<void(Call& call)>;
 
 private:
-  static void _Relay(void* callObj, void* payload) {
-    auto self = static_cast<FunctionHook*>(payload);
+  static void _Relay(Details::HookedCallData* callData) {
+    auto self = reinterpret_cast<FunctionHook*>(callData->hookObject);
     if (self->m_callback) {
-      self->m_callback(*static_cast<Call*>(callObj));
+      self->m_callback(*reinterpret_cast<Call*>(callData));
     }
   }
 

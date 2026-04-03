@@ -67,6 +67,10 @@ void FuncHookImpl::SetTarget(uintptr_t target) noexcept {
     Install();
 }
 
+uintptr_t FuncHookImpl::GetTrampoline() const noexcept {
+  return m->trampoline.address;
+}
+
 void FuncHookImpl::Install() {
   AssemblyWriter as;
 
@@ -155,9 +159,11 @@ void FuncHookImpl::Install() {
     as.bytes({ 0x48, 0x89, 0x41 }); // mov qword ptr [rcx + {offsetof(stackArgsStart)}], rax
     as.byte(offsetof(HookedCallData, stackArgsStart));
 
-    // Put relay payload into RDX
-    as.bytes({ 0x48, 0xba });    // mov rdx, {m->relayPayload}
-    as.pointer(m->relayPayload);
+    // Set HookedCall<>::hookObject
+    as.bytes({ 0x48, 0xb8 }); // mov rax, {this}
+    as.pointer(this);
+    as.bytes({ 0x48, 0x89, 0x41 }); // mov qword ptr [rcx + {offsetof(hookObject)}], rax
+    as.byte(offsetof(HookedCallData, hookObject));
 
     // Call the relay
     as.absCall(reinterpret_cast<uintptr_t>(m->relay));

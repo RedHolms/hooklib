@@ -5,7 +5,7 @@
 #include <random>
 
 static int Counter = 0;
-static void IncrementCounter() {
+static __declspec(noinline) void IncrementCounter() {
   ++Counter;
 }
 
@@ -57,7 +57,7 @@ TEST(FunctionHookTests, NoArgsNoRet) {
 }
 
 static int Accumulator = 0;
-static void Accumulate(int a, int b) {
+static __declspec(noinline) void Accumulate(int a, int b) {
   Accumulator += a + b;
 }
 
@@ -100,7 +100,7 @@ TEST(FunctionHookTests, ScalarArgsNoRet) {
   EXPECT_EQ(Accumulator, 12);
 }
 
-static int Calculate(int a, int b, int c) {
+static __declspec(noinline) int Calculate(int a, int b, int c) {
   return a + b - (b * c);
 }
 
@@ -125,7 +125,7 @@ TEST(FunctionHookTests, ScalarArgsAndRet) {
   }
 }
 
-static double XMMCalculate(double a, float b) {
+static __declspec(noinline) double XMMCalculate(double a, float b) {
   return a / (double)b;
 }
 
@@ -142,13 +142,20 @@ TEST(FunctionHookTests, XMMArgsAndRet) {
   static double testA = dist(rng);
   static float testB = dist(rng);
 
-  hook.SetCallback([](auto& call) {
+  double result = XMMCalculate(testA, testB);
+
+  hook.SetCallback([&](auto& call) {
     double a = call.Arg<0>();
     float b = call.Arg<1>();
     EXPECT_EQ(a, testA);
     EXPECT_EQ(b, testB);
+
+    double tempResult = call.CallOriginal(a, b);
+    EXPECT_EQ(tempResult, result);
+    call.SetReturnValue(-tempResult);
   });
   hook.Install();
 
-  XMMCalculate(testA, testB);
+  double negativeResult = XMMCalculate(testA, testB);
+  EXPECT_EQ(-result, negativeResult);
 }
