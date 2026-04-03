@@ -3,6 +3,7 @@
 #include "Assembly/AssemblyPool.hpp"
 #include "Assembly/AssemblyWriter.hpp"
 #include "Trampolines.hpp"
+#include <assert.h>
 #include <Windows.h>
 
 using HookLib::Details::FuncHookImpl;
@@ -10,7 +11,7 @@ using HookLib::Details::HookedCallData;
 
 struct FuncHookImpl::Data {
   bool installed = false;
-  FuncInfo const& targetInfo;
+  FuncHookOpts options;
   uintptr_t target = 0;
   FuncHookRelay relay = nullptr;
   void* relayPayload = nullptr;
@@ -22,24 +23,24 @@ struct FuncHookImpl::Data {
   AssemblySegment trampoline;
 
   __forceinline Data(
-    FuncInfo const& targetInfo,
+    FuncHookOpts const& options,
     uintptr_t target,
     FuncHookRelay relay,
     void* relayPayload
   )
-    : targetInfo(targetInfo),
+    : options(options),
       target(target),
       relay(relay),
       relayPayload(relayPayload) {}
 };
 
 FuncHookImpl::FuncHookImpl(
-  FuncInfo const& targetInfo,
+  FuncHookOpts const& options,
   uintptr_t target,
   FuncHookRelay relay,
   void* relayPayload
 )
-  : m(std::make_unique<Data>(targetInfo, target, relay, relayPayload)) {}
+  : m(std::make_unique<Data>(options, target, relay, relayPayload)) {}
 
 FuncHookImpl::~FuncHookImpl() = default;
 
@@ -77,90 +78,148 @@ void FuncHookImpl::Install() {
 
   // gen body
   if (m->hookBody.address == 0) {
-    // FIXME TODO Handle XMM arguments
+    // FIXME maybe using AVX?
 
-    // Copy registers into the shadow space
-    as.bytes({ 0x48, 0x89, 0x4c, 0x24, 0x08 });           // mov qword ptr [rsp+0x08], rcx
-    as.bytes({ 0x48, 0x89, 0x54, 0x24, 0x10 });           // mov qword ptr [rsp+0x10], rdx
-    as.bytes({ 0x4c, 0x89, 0x44, 0x24, 0x18 });           // mov qword ptr [rsp+0x18], r8
-    as.bytes({ 0x4c, 0x89, 0x4c, 0x24, 0x20 });           // mov qword ptr [rsp+0x20], r9
+    constexpr size_t SHADOW_SPACE_SIZE = sizeof(void*) * 4;
 
-    // Calculate how much stack space we need:
-    //    - HookedCall<> object
-    //    - Shadow space for relay call
-    //    - 16-bytes alignment
-    size_t bytesToAlloc = sizeof(HookedCallData) + (4 * sizeof(void*));
-    if ((bytesToAlloc % 16) != 0)
-      bytesToAlloc += 16 - (bytesToAlloc % 16);
+    size_t stackSpaceSize = 0;
+
+    // 16-bytes alignment
+    stackSpaceSize += 8;
+
+    // Hooked registers
+    stackSpaceSize += sizeof(HookedReg) * 4;
+
+    // HookedCallData
+    static_assert((sizeof(HookedCallData) % 16) == 0, "Invalid HookedCallData size");
+    stackSpaceSize += sizeof(HookedCallData);
+
+    // Shadow space for relay call
+    stackSpaceSize += SHADOW_SPACE_SIZE;
 
     // Allocate space on the stack
-    as.bytes({ 0x48, 0x81, 0xec });                       // sub rsp, <imm32>
-    as.dword(bytesToAlloc);                               // <imm32>
+    as.bytes({ 0x48, 0x81, 0xec }); // sub rsp, {stackSpaceSize}
+    as.dword(stackSpaceSize);
 
-    // Put HookedCall<>* into RCX (first argument)
-    as.bytes({ 0x48, 0x8d, 0x4c, 0x24 });                 // lea rcx, [rsp + <imm8>]
-    as.byte(4 * sizeof(void*));                           // <imm8>
+    // Current stack layout:
+    //    rsp                       = Shadow space for relay call
+    //    +SHADOW_SPACE_SIZE        = HookedCallData
+    //    +sizeof(HookedCallData)   = HookedReg[4]
+    //    +(sizeof(HookedReg) * 4)  = <8 bytes padding>
+    //    +8                        = return address
+    //    +8                        = ...stack arguments
+    size_t hookedCallDataOffset = SHADOW_SPACE_SIZE;
+    size_t hookedRegsOffset = hookedCallDataOffset + sizeof(HookedCallData);
+    size_t stackArgumentsOffset = hookedRegsOffset + (sizeof(HookedReg) * 4) + 8 + 8;
 
-    // Fill HookedCall<> with zeroes
+    for (size_t i = 0; i < std::size(m->options.xmmReg); ++i) {
+      size_t offset = hookedRegsOffset + (i * sizeof(HookedReg));
+
+      if (m->options.xmmReg[i]) {
+        constexpr uint8_t b3[] = { 0x84, 0x8C, 0x94, 0x9C };
+        as.bytes({ 0x0F, 0x29, b3[i], 0x24 }); // movaps xmmword ptr [rsp + {offset}], xmm{i}
+        as.dword(offset);
+      }
+      else {
+        constexpr uint8_t b1[] = { 0x48, 0x48, 0x4C, 0x4C };
+        constexpr uint8_t b3[] = { 0x8C, 0x94, 0x84, 0x8C };
+        as.bytes({ b1[i], 0x89, b3[i], 0x24 }); // mov qword ptr [rsp + {offset}], {reg}
+        as.dword(offset);
+      }
+    }
+
+    // Set RCX to HookedCallData*
+    as.bytes({ 0x48, 0x8d, 0x4c, 0x24 }); // lea rcx, [rsp + {hookedCallDataOffset}]
+    as.byte(hookedCallDataOffset);
+
+    // Fill HookedCallData with zeroes
     as.bytes({ 0x51 });                                   // push rcx
     as.bytes({ 0x57 });                                   // push rdi
     as.bytes({ 0x48, 0x89, 0xcf });                       // mov rdi, rcx
     as.bytes({ 0x48, 0x31, 0xC0 });                       // xor rax, rax
-    as.bytes({ 0x48, 0xC7, 0xC1 });                       // mov rcx, <imm32>
-    as.dword(sizeof(HookedCallData) / sizeof(uint64_t));  // <imm32>
+    as.bytes({ 0x48, 0xC7, 0xC1 });                       // mov rcx, {qwordsCount}
+    as.dword(sizeof(HookedCallData) / sizeof(uint64_t));  // {qwordsCount}
     as.bytes({ 0xF3, 0x48, 0xAB });                       // rep stosq qword ptr [rdi], rax
     as.bytes({ 0x5F });                                   // pop rdi
     as.bytes({ 0x59 });                                   // pop rcx
 
-    // Set HookedCall<>::stackFrame
-    as.bytes({ 0x48, 0x8d, 0x84, 0x24 });                 // lea rax, [rsp + <imm32>]
-    as.dword(bytesToAlloc);                               // <imm32>
-    as.bytes({ 0x48, 0x89, 0x41 });                       // mov qword ptr [rcx + <imm8>], rax
-    as.byte(offsetof(HookedCallData, stackFrame));        // <imm8>
+    // Set HookedCallData::hookedRegs
+    as.bytes({ 0x48, 0x8D, 0x44, 0x24 }); // lea rax, [rsp + {hookedRegsOffset}]
+    as.byte(hookedRegsOffset);
+    as.bytes({ 0x48, 0x89, 0x41 }); // mov qword ptr [rcx + {offsetof(hookedRegs)}], rax
+    as.byte(offsetof(HookedCallData, hookedRegs));
 
-    // Put payload into RDX (second argument)
-    as.bytes({ 0x48, 0xba });                             // mov rdx, <imm64>
-    as.pointer(m->relayPayload);                          // <imm64>
+    // Set HookedCall<>::stackArgsStart
+    as.bytes({ 0x48, 0x8D, 0x44, 0x24 }); // lea rax, [rsp + {stackArgumentsOffset}]
+    as.byte(stackArgumentsOffset);
+    as.bytes({ 0x48, 0x89, 0x41 }); // mov qword ptr [rcx + {offsetof(stackArgsStart)}], rax
+    as.byte(offsetof(HookedCallData, stackArgsStart));
+
+    // Put relay payload into RDX
+    as.bytes({ 0x48, 0xba });    // mov rdx, {m->relayPayload}
+    as.pointer(m->relayPayload);
 
     // Call the relay
     as.absCall(reinterpret_cast<uintptr_t>(m->relay));
 
-    // Put HookedCall<>* into RCX
-    as.bytes({ 0x48, 0x8d, 0x4c, 0x24 });                 // lea rcx, [rsp + <imm8>]
-    as.byte(4 * sizeof(void*));                           // <imm8>
-
-    // NOTE: We could restore stack space here assuming that our data won't be touched even if it's
-    // below the stack pointer, but let's be extra-safe here as it CAN be touched in some really
-    // shitty scenarios (i.e. debugger can modify it).
+    // Set RCX to HookedCallData*
+    as.bytes({ 0x48, 0x8d, 0x4c, 0x24 }); // lea rcx, [rsp + {hookedCallDataOffset}]
+    as.byte(hookedCallDataOffset);
 
     // Check HookedCall<>::canceled
-    as.bytes({ 0xf6, 0x01, 0xff });                       // test byte ptr [rcx], 0xff
-    as.bytes({ 0x74 });                                   // jnz <rel8>
-    as.byte(12);                                          // <rel8> (to CONTINUE_ORIGINAL)
+    static_assert(
+      offsetof(HookedCallData, canceled) == 0,
+      "bool HookedCallData::canceled must be at offset 0"
+    );
+    as.bytes({ 0xf6, 0x01, 0xff }); // test byte ptr [rcx], 0xff
+    as.bytes({ 0x74 });             // jnz CONTINUE_ORIGINAL
+    as.byte(12);
 
-    // Return to the callee. Get RAX value
-    as.bytes({ 0x48, 0x8b, 0x41 });                       // mov rax, qword ptr [rcx + <imm8>]
-    as.byte(offsetof(HookedCallData, returnValue));       // <imm8>
+    // Return to the caller
+
+    if (m->options.xmmRetVal) {
+      // Put return value to XMM0
+      as.bytes({ 0x0F, 0x28, 0x41 }); // movaps xmm0, xmmword ptr [rcx + {offset}]
+      as.byte(offsetof(HookedCallData, returnValue));
+    }
+    else {
+      // Put return value to RAX
+      as.bytes({ 0x48, 0x8b, 0x41 }); // mov rax, qword ptr [rcx + {offset}]
+      as.byte(offsetof(HookedCallData, returnValue));
+    }
 
     // Restore stack space
-    as.bytes({ 0x48, 0x81, 0xc4 });                       // add rsp, <imm32>
-    as.dword(bytesToAlloc);                               // <imm32>
+    as.bytes({ 0x48, 0x81, 0xc4 }); // add rsp, {stackSpaceSize}
+    as.dword(stackSpaceSize);
 
     // Return!
-    as.bytes({ 0xc3 });                                   // ret
-    // ===================================
+    as.bytes({ 0xc3 }); // ret
 
+    // ===================================
     // CONTINUE_ORIGINAL:
 
-    // Restore stack space
-    as.bytes({ 0x48, 0x81, 0xc4 });                       // add rsp, <imm32>
-    as.dword(bytesToAlloc);                               // <imm32>
+    // Return to the callee
 
-    // Restore registers from the shadow space
-    as.bytes({ 0x48, 0x8b, 0x4c, 0x24, 0x08 });           // mov rcx, qword ptr [rsp+0x08]
-    as.bytes({ 0x48, 0x8b, 0x54, 0x24, 0x10 });           // mov rdx, qword ptr [rsp+0x10]
-    as.bytes({ 0x4c, 0x8b, 0x44, 0x24, 0x18 });           // mov r8, qword ptr [rsp+0x18]
-    as.bytes({ 0x4c, 0x8b, 0x4c, 0x24, 0x20 });           // mov r9, qword ptr [rsp+0x20]
+    // Restore registers
+    for (size_t i = 0; i < std::size(m->options.xmmReg); ++i) {
+      size_t offset = hookedRegsOffset + (i * sizeof(HookedReg));
+
+      if (m->options.xmmReg[i]) {
+        constexpr uint8_t b3[] = { 0x84, 0x8C, 0x94, 0x9C };
+        as.bytes({ 0x0F, 0x28, b3[i], 0x24 }); // movaps xmm{i}, xmmword ptr [rsp + {offset}]
+        as.dword(offset);
+      }
+      else {
+        constexpr uint8_t b1[] = { 0x48, 0x48, 0x4C, 0x4C };
+        constexpr uint8_t b3[] = { 0x8C, 0x94, 0x84, 0x8C };
+        as.bytes({ b1[i], 0x8B, b3[i], 0x24 }); // mov {reg}, qword ptr [rsp + {offset}]
+        as.dword(offset);
+      }
+    }
+
+    // Restore stack space
+    as.bytes({ 0x48, 0x81, 0xc4 }); // add rsp, {stackSpaceSize}
+    as.dword(stackSpaceSize);
 
     // Jump to the trampoline
     as.absJmp(m->trampoline.address);

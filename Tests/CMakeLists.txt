@@ -29,4 +29,8 @@ target_link_libraries(HookLib_Tests PRIVATE
   GTest::gtest
 )
 
+set_target_properties(HookLib_Tests PROPERTIES
+  CXX_STANDARD 20
+)
+
 gtest_discover_tests(HookLib_Tests)

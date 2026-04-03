@@ -60,14 +60,14 @@ int CreateTrampoline(uintptr_t source, AssemblyWriter& dest, bool jumpBack) {
     else if (hs.opcode == 0xE8) {
       // Relative call
 
-      uintptr_t targetAddress = current + hs.len + hs.imm.imm32;
+      uintptr_t targetAddress = instAddr + hs.len + hs.imm.imm32;
       dest.absCall(targetAddress);
     }
     else if ((hs.opcode & 0xFD) == 0xE9) {
       // Relative jump
 
       int32_t relative = (hs.opcode == 0xEB) ? hs.imm.imm8 : hs.imm.imm32;
-      uintptr_t targetAddress = current + hs.len + relative;
+      uintptr_t targetAddress = instAddr + hs.len + relative;
 
       if (source <= targetAddress && targetAddress < (source + 5)) {
         if (targetAddress > maxJumpTarget)
@@ -90,7 +90,7 @@ int CreateTrampoline(uintptr_t source, AssemblyWriter& dest, bool jumpBack) {
       int32_t relative =
         ((hs.opcode & 0xF0) == 0x70) || ((hs.opcode & 0xFC) == 0xE0) ? hs.imm.imm8 : hs.imm.imm32;
 
-      uintptr_t targetAddress = current + hs.len + relative;
+      uintptr_t targetAddress = instAddr + hs.len + relative;
       if (source <= targetAddress && targetAddress < (source + 5)) {
         if (targetAddress > maxJumpTarget)
           maxJumpTarget = targetAddress;

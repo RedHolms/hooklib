@@ -11,7 +11,9 @@ public:
   inline AssemblyWriter() {
     m_buffer.reserve(64);
   }
-  inline explicit AssemblyWriter(size_t prealloc) : m_buffer(prealloc) {}
+  inline explicit AssemblyWriter(size_t prealloc) {
+    m_buffer.reserve(prealloc);
+  }
 
 public:
   inline size_t Size() const noexcept {

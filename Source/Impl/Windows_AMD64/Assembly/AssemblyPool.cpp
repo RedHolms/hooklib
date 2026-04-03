@@ -1,5 +1,6 @@
 #include "AssemblyPool.hpp"
 
+#include "Impl/Windows_AMD64/MemoryConstants.hpp"
 #include <Windows.h>
 
 AssemblyPool gAssemblyPool;

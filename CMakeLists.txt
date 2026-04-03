@@ -58,6 +58,9 @@ endif()
 add_library(__hooklib_internal INTERFACE)
 target_sources(__hooklib_internal INTERFACE ${SOURCES} ${PUBLIC_INCLUDES})
 target_include_directories(__hooklib_internal INTERFACE "Include" "Source")
+set_target_properties(__hooklib_internal PROPERTIES
+  CXX_STANDARD 17
+)
 
 if(BUILD_TESTING)
   include(CTest)

@@ -5,9 +5,6 @@
 #include <stdint.h>
 #include <vector>
 
-constexpr size_t MEMORY_PAGE_SIZE = 4096;
-constexpr size_t NEAR_ALLOCATION_RANGE = 0x40000000;
-
 // Handle to a segment of assembly code
 class AssemblySegment {
   friend class AssemblyPool;

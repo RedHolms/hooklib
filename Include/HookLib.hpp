@@ -92,13 +92,6 @@
 
 #ifdef __cplusplus
 
-#ifdef HOOKLIB_TESTS_TARGET
-#include <gtest/gtest_prod.h>
-#define HOOKLIB_FRIEND_TEST FRIEND_TEST
-#else
-#define HOOKLIB_FRIEND_TEST(...)
-#endif
-
 // Include implementation for current ABI
 #if HOOKLIB_ABI_IS_WINDOWS_AMD64
 #include "HookLib/Impl/Windows_AMD64/HookLib.hpp"
